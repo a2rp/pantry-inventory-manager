@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { FiAlertCircle, FiMinus, FiPlus, FiSearch, FiTrash2 } from "react-icons/fi";
 import ConfirmDialog from "../confirmDialog";
 import styles from "./styles.module.css";
@@ -6,8 +6,15 @@ import styles from "./styles.module.css";
 const storageKey = "pantry-notes-inventory";
 const dateAfter = (days) => {
     const date = new Date();
+    date.setHours(12, 0, 0, 0);
     date.setDate(date.getDate() + days);
-    return date.toISOString().slice(0, 10);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+};
+const isValidDate = (value) => {
+    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const [year, month, day] = value.split("-").map(Number);
+    const date = new Date(year, month - 1, day, 12);
+    return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
 };
 const starterStock = [
     { id: 1, name: "Rolled oats", category: "Breakfast", quantity: 2, unit: "bags", minimum: 1, expiry: dateAfter(120) },
@@ -19,9 +26,35 @@ const starterStock = [
 const readStock = () => {
     try {
         const saved = localStorage.getItem(storageKey);
-        return saved ? JSON.parse(saved) : starterStock;
+        if (!saved) return starterStock.map((item) => ({ ...item }));
+        const parsed = JSON.parse(saved);
+        if (!Array.isArray(parsed)) return starterStock.map((item) => ({ ...item }));
+
+        const ids = new Set();
+        return parsed.flatMap((item, index) => {
+            if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+            const name = typeof item.name === "string" ? item.name.trim().slice(0, 80) : "";
+            if (!name) return [];
+
+            const originalId = typeof item.id === "string" && item.id.trim() && item.id.length <= 120
+                ? item.id
+                : Number.isSafeInteger(item.id) ? item.id : `saved-${index}`;
+            let id = String(originalId);
+            while (ids.has(id)) id = `${String(originalId)}-${index}-${ids.size}`;
+            ids.add(id);
+
+            return [{
+                id,
+                name,
+                category: typeof item.category === "string" && item.category.trim() ? item.category.trim().slice(0, 50) : "Other",
+                quantity: Number.isFinite(item.quantity) ? Math.max(0, item.quantity) : 0,
+                unit: typeof item.unit === "string" && item.unit.trim() ? item.unit.trim().slice(0, 20) : "items",
+                minimum: Number.isFinite(item.minimum) ? Math.max(0, item.minimum) : 1,
+                expiry: isValidDate(item.expiry) ? item.expiry : dateAfter(180),
+            }];
+        });
     } catch {
-        return starterStock;
+        return starterStock.map((item) => ({ ...item }));
     }
 };
 const shortDate = (date) => new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(new Date(date + "T12:00:00"));
@@ -33,7 +66,23 @@ const PantryInventoryManager = () => {
     const [query, setQuery] = useState("");
     const [draft, setDraft] = useState({ name: "", category: "Tins & jars", quantity: "1", unit: "items", minimum: "1", expiry: dateAfter(180) });
     const [pendingDelete, setPendingDelete] = useState(null);
-    useEffect(() => localStorage.setItem(storageKey, JSON.stringify(stock)), [stock]);
+    const [storageUnavailable, setStorageUnavailable] = useState(() => {
+        try {
+            localStorage.getItem(storageKey);
+            return false;
+        } catch {
+            return true;
+        }
+    });
+    const saveStock = (nextStock) => {
+        setStock(nextStock);
+        try {
+            localStorage.setItem(storageKey, JSON.stringify(nextStock));
+            setStorageUnavailable(false);
+        } catch {
+            setStorageUnavailable(true);
+        }
+    };
 
     const categories = ["All shelves", ...new Set(stock.map((item) => item.category))];
     const lowStock = stock.filter((item) => item.quantity <= item.minimum).length;
@@ -47,12 +96,12 @@ const PantryInventoryManager = () => {
     const addItem = (event) => {
         event.preventDefault();
         if (!draft.name.trim()) return;
-        setStock((current) => [...current, { ...draft, id: Date.now(), name: draft.name.trim(), quantity: Number(draft.quantity), minimum: Number(draft.minimum) }]);
+        saveStock([...stock, { ...draft, id: Date.now(), name: draft.name.trim(), quantity: Number(draft.quantity), minimum: Number(draft.minimum) }]);
         setDraft({ name: "", category: "Tins & jars", quantity: "1", unit: "items", minimum: "1", expiry: dateAfter(180) });
     };
-    const changeQuantity = (id, amount) => setStock((current) => current.map((item) => item.id === id ? { ...item, quantity: Math.max(0, item.quantity + amount) } : item));
+    const changeQuantity = (id, amount) => saveStock(stock.map((item) => item.id === id ? { ...item, quantity: Math.max(0, item.quantity + amount) } : item));
     const removeItem = () => {
-        setStock((current) => current.filter((item) => item.id !== pendingDelete.id));
+        saveStock(stock.filter((item) => item.id !== pendingDelete.id));
         setPendingDelete(null);
     };
 
@@ -87,15 +136,15 @@ const PantryInventoryManager = () => {
             </section>
             <form className={styles.addForm} id="add" onSubmit={addItem}>
                 <div className={styles.formTitle}><span><FiPlus aria-hidden="true" /></span><div><h2>Add pantry item</h2><p>Keep a rough count of staples.</p></div></div>
-                <label>Name<input required value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="e.g. Lentils" /></label>
+                <label>Name<input required maxLength={80} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="e.g. Lentils" /></label>
                 <label>Shelf<select value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value })}>{["Tins & jars", "Grains", "Breakfast", "Cooking", "Baking", "Other"].map((value) => <option key={value}>{value}</option>)}</select></label>
-                <label>Quantity<input type="number" min="0" value={draft.quantity} onChange={(event) => setDraft({ ...draft, quantity: event.target.value })} /></label>
-                <label>Unit<input value={draft.unit} onChange={(event) => setDraft({ ...draft, unit: event.target.value })} /></label>
-                <label>Restock at<input type="number" min="0" value={draft.minimum} onChange={(event) => setDraft({ ...draft, minimum: event.target.value })} /></label>
-                <label>Use by<input type="date" value={draft.expiry} onChange={(event) => setDraft({ ...draft, expiry: event.target.value })} /></label>
+                <label>Quantity<input required type="number" min="0" value={draft.quantity} onChange={(event) => setDraft({ ...draft, quantity: event.target.value })} /></label>
+                <label>Unit<input required maxLength={20} value={draft.unit} onChange={(event) => setDraft({ ...draft, unit: event.target.value })} /></label>
+                <label>Restock at<input required type="number" min="0" value={draft.minimum} onChange={(event) => setDraft({ ...draft, minimum: event.target.value })} /></label>
+                <label>Use by<input required type="date" value={draft.expiry} onChange={(event) => setDraft({ ...draft, expiry: event.target.value })} /></label>
                 <button type="submit" className={styles.addButton}>Add to pantry <FiPlus aria-hidden="true" /></button>
             </form>
-            <p className={styles.storageNote}>Inventory is saved in this browser. Counts are for planning, not barcode-level tracking.</p>
+            <p className={styles.storageNote}>{storageUnavailable ? "Browser storage is unavailable. Inventory changes will only last for this session." : "Inventory is saved in this browser. Counts are for planning, not barcode-level tracking."}</p>
             {pendingDelete && <ConfirmDialog title="Remove this pantry item?" description={"“" + pendingDelete.name + "” will be removed from your inventory."} onCancel={() => setPendingDelete(null)} onConfirm={removeItem} />}
         </section>
     );

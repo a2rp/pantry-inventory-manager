@@ -26,8 +26,10 @@ This is a browser-only utility. Clearing the browser’s site data removes its s
 
 ## Run locally
 
+Requires Node.js 20.19+ or 22.12+. Run these commands from this directory:
+
 ~~~sh
-npm install
+npm ci
 npm run dev
 ~~~
 
